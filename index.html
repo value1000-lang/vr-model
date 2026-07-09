@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>VR Room</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#111}
+  #c{width:100%;height:100%;touch-action:none;display:block}
+  #msg{position:fixed;top:10px;left:10px;color:#fff;font-family:sans-serif;
+       background:rgba(0,0,0,.55);padding:8px 12px;border-radius:8px;z-index:10;font-size:16px}
+</style>
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+</head>
+<body>
+<div id="msg">加载中…</div>
+<canvas id="c"></canvas>
+<script>
+const msg = document.getElementById('msg');
+const canvas = document.getElementById('c');
+const engine = new BABYLON.Engine(canvas, true, { stencil:true });
+const scene = new BABYLON.Scene(engine);
+scene.clearColor = new BABYLON.Color4(0.12, 0.12, 0.14, 1);
+
+// 环境光：无灯版模型也不会全黑；强度适中，避免过曝。太暗就把 intensity 调大，过曝就调小。
+const hemi = new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0.2, 1, 0.1), scene);
+hemi.intensity = 1.0;
+
+// 进 VR 前的桌面/预览相机（进入 VR 后由头显接管）
+const camera = new BABYLON.UniversalCamera('cam', new BABYLON.Vector3(0, 1.6, -3), scene);
+camera.attachControl(canvas, true);
+camera.minZ = 0.05;
+camera.speed = 0.25;
+
+// 模型直链（jsDelivr，已验证可用、带 CORS）
+const ROOT = "https://cdn.jsdelivr.net/gh/value1000-lang/vr-model@main/";
+const FILE = "glb_furnished_VR_nolights.glb";
+
+BABYLON.SceneLoader.ImportMeshAsync("", ROOT, FILE, scene, (e) => {
+  if (e && e.lengthComputable) msg.textContent = '加载中… ' + Math.floor(e.loaded / e.total * 100) + '%';
+}).then(async (result) => {
+  msg.textContent = '已加载 ✓  点右下角「进入 VR」';
+
+  // 计算模型包围盒，把人放到房间中心、眼睛高度 1.6m
+  let min = new BABYLON.Vector3(1e9,1e9,1e9), max = new BABYLON.Vector3(-1e9,-1e9,-1e9);
+  result.meshes.forEach(m => {
+    if (m.getTotalVertices() > 0) {
+      const b = m.getBoundingInfo().boundingBox;
+      min = BABYLON.Vector3.Minimize(min, b.minimumWorld);
+      max = BABYLON.Vector3.Maximize(max, b.maximumWorld);
+    }
+  });
+  const center = min.add(max).scale(0.5);
+  const startPos = new BABYLON.Vector3(center.x, min.y + 1.6, center.z);
+  camera.position = startPos.clone();
+
+  // WebXR：生成「进入 VR」按钮 + 左摇杆平滑移动、右摇杆转向
+  try {
+    const xr = await scene.createDefaultXRExperienceAsync({ disableTeleportation: true });
+    const fm = xr.baseExperience.featuresManager;
+    fm.enableFeature(BABYLON.WebXRFeatureName.MOVEMENT, 'latest', {
+      xrInput: xr.input, movementSpeed: 0.08, rotationSpeed: 0.15
+    });
+    // 进入 VR 时，把人瞬移到房间中心
+    xr.baseExperience.onStateChangedObservable.add(s => {
+      if (s === BABYLON.WebXRState.IN_XR) {
+        xr.baseExperience.camera.position = startPos.clone();
+      }
+    });
+  } catch (err) {
+    msg.textContent = 'WebXR 不可用：' + (err.message || err);
+  }
+}).catch(err => {
+  msg.textContent = '模型加载失败：' + (err.message || err);
+});
+
+engine.runRenderLoop(() => scene.render());
+window.addEventListener('resize', () => engine.resize());
+</script>
+</body>
+</html>
