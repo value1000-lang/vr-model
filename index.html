@@ -41,8 +41,17 @@ camera.attachControl(canvas, true);
 camera.minZ = 0.05;
 camera.speed = 0.25;
 
-const ROOT = "https://cdn.jsdelivr.net/gh/value1000-lang/vr-model@main/";
+const ROOT = "";  // 从 GitHub Pages 同目录加载模型（避开 jsDelivr 缓存/被墙）
 const FILE = "glb_furnished_VR_nolights.glb";
+
+// 自托管 Draco 解压器（避开被墙的外部 CDN）
+BABYLON.DracoCompression.Configuration = {
+  decoder: {
+    wasmUrl: "draco/draco_wasm_wrapper_gltf.js",
+    wasmBinaryUrl: "draco/draco_decoder_gltf.wasm",
+    fallbackUrl: "draco/draco_decoder_gltf.js"
+  }
+};
 
 let startPos = new BABYLON.Vector3(0, 1.6, 0);
 
