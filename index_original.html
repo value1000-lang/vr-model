@@ -35,6 +35,7 @@ let hemiIntensity = 1.0;   // 环境光亮度
 
 const hemi = new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0.2, 1, 0.1), scene);
 hemi.intensity = hemiIntensity;
+hemi.groundColor = new BABYLON.Color3(0.85, 0.85, 0.88);  // 朝下的面(梁下沿/天花板/底面)也呈灰色，避免变黑
 
 const camera = new BABYLON.UniversalCamera('cam', new BABYLON.Vector3(0, 1.6, -3), scene);
 camera.attachControl(canvas, true);
