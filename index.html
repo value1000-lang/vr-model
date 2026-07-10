@@ -26,7 +26,7 @@ const scene = new BABYLON.Scene(engine);
 scene.clearColor = new BABYLON.Color4(0.12, 0.12, 0.14, 1);
 
 // ===== 可调参数（想改默认值就动这里）=====
-let baseSpeed = 0.05;      // 移动速度（左手 X/Y 键运行时可调）
+let baseSpeed = 0.10;      // 移动速度（左手 X/Y 键运行时可调）
 const V_SPEED  = 1.2;      // 上下升降速度（米/秒）
 const SPRINT_X = 3;        // 冲刺倍数
 const TURN_SPEED = 0.20;   // 转向速度
@@ -51,7 +51,8 @@ function controlsText(){
          "移动: 左摇杆   转向: 右摇杆\n" +
          "上升/下降: 右手 A/B\n" +
          "加速/减速: 左手 Y/X   冲刺: 右扳机\n" +
-         "回中心: 左手 Grip   速度: " + baseSpeed.toFixed(2);
+         "回中心: 左手 Grip   退出VR: 长按右手B 2秒\n" +
+         "速度: " + baseSpeed.toFixed(2);
 }
 
 BABYLON.SceneLoader.ImportMeshAsync("", ROOT, FILE, scene, (e) => {
@@ -88,7 +89,7 @@ BABYLON.SceneLoader.ImportMeshAsync("", ROOT, FILE, scene, (e) => {
   function updatePanel(){
     if (panelText) panelText.text =
       "速度 " + baseSpeed.toFixed(2) + "  高度 " + cam.position.y.toFixed(1) + "m\n" +
-      "移动:左摇杆  转向:右摇杆\n上升/下降:A/B  加减速:Y/X\n冲刺:右扳机  回中心:左Grip";
+      "移动:左摇杆  转向:右摇杆\n上升/下降:A/B  加减速:Y/X\n冲刺:右扳机  回中心:左Grip\n长按右手B 2秒 退出VR";
   }
 
   // 绑定手柄按键
@@ -116,11 +117,12 @@ BABYLON.SceneLoader.ImportMeshAsync("", ROOT, FILE, scene, (e) => {
     });
   });
 
-  // 每帧：右手 A/B 升降 + 右扳机冲刺
+  // 每帧：右手 A/B 升降 + 右扳机冲刺 + 右手B长按2秒退出VR
+  let bHoldStart = 0;
   scene.onBeforeRenderObservable.add(() => {
     if (!xr.baseExperience || xr.baseExperience.state !== BABYLON.WebXRState.IN_XR) return;
     const dt = engine.getDeltaTime() / 1000;
-    let up = 0, sprint = false;
+    let up = 0, sprint = false, bHeld = false;
     xr.input.controllers.forEach(c => {
       const mc = c.motionController; if (!mc) return;
       if (mc.handedness === 'right') {
@@ -128,10 +130,15 @@ BABYLON.SceneLoader.ImportMeshAsync("", ROOT, FILE, scene, (e) => {
         const b = mc.getComponent('b-button');
         const tr = mc.getComponent('xr-standard-trigger');
         if (a && a.pressed) up += 1;
-        if (b && b.pressed) up -= 1;
+        if (b && b.pressed) { up -= 1; bHeld = true; }
         if (tr && tr.value > 0.5) sprint = true;
       }
     });
+    // 右手 B 键长按 2 秒退出 VR
+    if (bHeld) {
+      if (!bHoldStart) bHoldStart = performance.now();
+      else if (performance.now() - bHoldStart > 2000) { bHoldStart = 0; xr.baseExperience.exitXRAsync(); }
+    } else { bHoldStart = 0; }
     if (up !== 0) { cam.position.y += up * V_SPEED * dt; updatePanel(); }
     mv.movementSpeed = sprint ? baseSpeed * SPRINT_X : baseSpeed;
   });
