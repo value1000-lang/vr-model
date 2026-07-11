@@ -32,8 +32,8 @@ const V_SPEED  = 1.2;      // 上下升降速度（米/秒）
 const SPRINT_X = 3;        // 冲刺倍数
 const TURN_SPEED = 0.20;   // 平滑转向速度
 const SNAP_ANGLE = Math.PI / 4;  // 瞬转角度（45°）
-let hemiIntensity = 0.7;   // 环境光亮度（加了 IBL 后调低，两者相加）
-const ENV_INTENSITY = 0.9; // IBL 环境反射强度
+let hemiIntensity = 0.45;  // 环境光亮度（整体明暗主要靠它）
+const ENV_INTENSITY = 0.6; // IBL 环境反射强度（金属/大理石的反光质感）
 const FB_SCALE = 1.25;     // VR 渲染分辨率倍数（Quest 3 更清晰）
 // =========================================
 
