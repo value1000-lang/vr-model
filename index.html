@@ -11,9 +11,10 @@
        background:rgba(0,0,0,.55);padding:8px 12px;border-radius:8px;z-index:10;
        font-size:15px;line-height:1.5;white-space:pre;max-width:90vw}
 </style>
-<script src="https://cdn.babylonjs.com/babylon.js"></script>
-<script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
-<script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
+<!-- 自托管 Babylon（锁版本 + 避开外部 CDN） -->
+<script src="js/babylon.js"></script>
+<script src="js/babylonjs.loaders.min.js"></script>
+<script src="js/babylon.gui.min.js"></script>
 </head>
 <body>
 <div id="msg">加载中…</div>
@@ -21,7 +22,7 @@
 <script>
 const msg = document.getElementById('msg');
 const canvas = document.getElementById('c');
-const engine = new BABYLON.Engine(canvas, true, { stencil:true });
+const engine = new BABYLON.Engine(canvas, true, { stencil:true, powerPreference:'high-performance' });
 const scene = new BABYLON.Scene(engine);
 scene.clearColor = new BABYLON.Color4(0.12, 0.12, 0.14, 1);
 
@@ -29,21 +30,41 @@ scene.clearColor = new BABYLON.Color4(0.12, 0.12, 0.14, 1);
 let baseSpeed = 0.10;      // 移动速度（左手 X/Y 键运行时可调）
 const V_SPEED  = 1.2;      // 上下升降速度（米/秒）
 const SPRINT_X = 3;        // 冲刺倍数
-const TURN_SPEED = 0.20;   // 转向速度
-let hemiIntensity = 1.0;   // 环境光亮度
+const TURN_SPEED = 0.20;   // 平滑转向速度
+const SNAP_ANGLE = Math.PI / 4;  // 瞬转角度（45°）
+let hemiIntensity = 0.7;   // 环境光亮度（加了 IBL 后调低，两者相加）
+const ENV_INTENSITY = 0.9; // IBL 环境反射强度
+const FB_SCALE = 1.25;     // VR 渲染分辨率倍数（Quest 3 更清晰）
 // =========================================
+
+// 三个场景，左手扳机循环切换；也可用 ?model=ceiling / ?model=original 直接进
+const MODELS = [
+  { key:'nolights', file:'glb_furnished_VR_nolights.glb', name:'无灯版' },
+  { key:'ceiling',  file:'glb_furnished_VR_ceiling.glb',  name:'天花板版' },
+  { key:'original', file:'glb_furnished_VR_original.glb', name:'原始版' },
+];
+const wanted = new URLSearchParams(location.search).get('model') || 'nolights';
+let modelIndex = Math.max(0, MODELS.findIndex(m => m.key === wanted));
 
 const hemi = new BABYLON.HemisphericLight('h', new BABYLON.Vector3(0.2, 1, 0.1), scene);
 hemi.intensity = hemiIntensity;
 hemi.groundColor = new BABYLON.Color3(0.85, 0.85, 0.88);  // 朝下的面(梁下沿/天花板/底面)也呈灰色，避免变黑
 
+// IBL 环境光照：给 PBR 材质（金属/大理石/玻璃）提供反射，质感立体
+scene.environmentTexture = BABYLON.CubeTexture.CreateFromPrefilteredData('env/environmentSpecular.env', scene);
+scene.environmentIntensity = ENV_INTENSITY;
+
 const camera = new BABYLON.UniversalCamera('cam', new BABYLON.Vector3(0, 1.6, -3), scene);
 camera.attachControl(canvas, true);
 camera.minZ = 0.05;
 camera.speed = 0.25;
-
-const ROOT = "";  // 从 GitHub Pages 同目录加载模型（避开 jsDelivr 缓存/被墙）
-const FILE = "glb_furnished_VR_nolights.glb";
+// 桌面预览：WASD 移动 + QE 升降（方向键仍可用）
+camera.keysUp.push(87);      // W
+camera.keysDown.push(83);    // S
+camera.keysLeft.push(65);    // A
+camera.keysRight.push(68);   // D
+camera.keysUpward.push(69);  // E
+camera.keysDownward.push(81);// Q
 
 // 自托管 Draco 解压器（避开被墙的外部 CDN）
 BABYLON.DracoCompression.Configuration = {
@@ -55,19 +76,49 @@ BABYLON.DracoCompression.Configuration = {
 };
 
 let startPos = new BABYLON.Vector3(0, 1.6, 0);
+let snapTurn = false;   // false=平滑转向 true=45°瞬转（按下右摇杆切换）
+let loading = false;
+let currentMeshes = [];
+let xrCam = null, mvFeature = null, panelText = null;
 
 function controlsText(){
-  return "已加载 ✓  点右下角「进入 VR」\n" +
-         "移动: 左摇杆   转向: 右摇杆\n" +
-         "上升/下降: 右手 A/B\n" +
-         "加速/减速: 左手 Y/X   冲刺: 右扳机\n" +
-         "回中心: 左手 Grip   退出VR: 长按右手B 2秒\n" +
+  return "已加载 ✓ [" + MODELS[modelIndex].name + "]  点右下角「进入 VR」\n" +
+         "桌面: WASD移动 QE升降 鼠标拖视角\n" +
+         "VR: 移动:左摇杆  转向:右摇杆(按下右摇杆=切换瞬转)\n" +
+         "上升/下降: 右手 A/B   加速/减速: 左手 Y/X   冲刺: 右扳机\n" +
+         "切换场景: 左扳机   回中心: 左手 Grip   退出VR: 长按右手B 2秒\n" +
          "速度: " + baseSpeed.toFixed(2);
 }
 
-BABYLON.SceneLoader.ImportMeshAsync("", ROOT, FILE, scene, (e) => {
-  if (e && e.lengthComputable) msg.textContent = '加载中… ' + Math.floor(e.loaded / e.total * 100) + '%';
-}).then(async (result) => {
+function updatePanel(){
+  if (panelText) panelText.text =
+    "[" + MODELS[modelIndex].name + "] 速度 " + baseSpeed.toFixed(2) +
+    (xrCam ? "  高度 " + xrCam.position.y.toFixed(1) + "m" : "") +
+    "  转向:" + (snapTurn ? "瞬转" : "平滑") + "\n" +
+    "移动:左摇杆  转向:右摇杆(按下切瞬转)\n" +
+    "升降:右手A/B  加减速:左手Y/X\n" +
+    "冲刺:右扳机  切场景:左扳机\n" +
+    "回中心:左Grip  长按右B 2秒退出";
+}
+
+// 冻结当前场景（静态房间：省掉每帧矩阵计算和裁剪，Quest 上帧率更稳）
+function refreeze(){
+  scene.unfreezeActiveMeshes();
+  scene.freezeActiveMeshes();
+}
+
+async function loadModel(i){
+  loading = true;
+  scene.unfreezeActiveMeshes();
+  currentMeshes.forEach(m => { if (!m.isDisposed()) m.dispose(false, true); });
+  currentMeshes = [];
+  msg.textContent = '加载中… [' + MODELS[i].name + ']';
+
+  const result = await BABYLON.SceneLoader.ImportMeshAsync("", "", MODELS[i].file, scene, (e) => {
+    if (e && e.lengthComputable) msg.textContent = '加载中… [' + MODELS[i].name + '] ' + Math.floor(e.loaded / e.total * 100) + '%';
+  });
+  currentMeshes = result.meshes;
+
   // 包围盒 → 房间中心、眼高 1.6m
   let min = new BABYLON.Vector3(1e9,1e9,1e9), max = new BABYLON.Vector3(-1e9,-1e9,-1e9);
   result.meshes.forEach(m => {
@@ -80,55 +131,84 @@ BABYLON.SceneLoader.ImportMeshAsync("", ROOT, FILE, scene, (e) => {
   const center = min.add(max).scale(0.5);
   startPos = new BABYLON.Vector3(center.x, min.y + 1.6, center.z);
   camera.position = startPos.clone();
-  msg.textContent = controlsText();
+  if (xrCam) xrCam.position = startPos.clone();
 
-  // WebXR：进入按钮 + 左摇杆移动 / 右摇杆转向
-  const xr = await scene.createDefaultXRExperienceAsync({ disableTeleportation: true });
+  // 等材质/贴图全就绪后再冻结（否则 IBL 贴图晚到会失效）
+  await scene.whenReadyAsync();
+  result.meshes.forEach(m => {
+    m.freezeWorldMatrix();
+    m.alwaysSelectAsActiveMesh = true;  // 单个房间全在视野内，跳过逐帧裁剪
+    if (m.material) m.material.freeze();
+  });
+  refreeze();
+
+  msg.textContent = controlsText();
+  updatePanel();
+  loading = false;
+}
+
+loadModel(modelIndex).then(async () => {
+  // WebXR：进入按钮 + 左摇杆移动 / 右摇杆转向；提高渲染分辨率
+  const xr = await scene.createDefaultXRExperienceAsync({
+    disableTeleportation: true,
+    outputCanvasOptions: { canvasOptions: { framebufferScaleFactor: FB_SCALE } }
+  });
   const cam = xr.baseExperience.camera;
+  xrCam = cam;
   const fm = xr.baseExperience.featuresManager;
   const mv = fm.enableFeature(BABYLON.WebXRFeatureName.MOVEMENT, 'latest', {
     xrInput: xr.input, movementSpeed: baseSpeed, rotationSpeed: TURN_SPEED
   });
+  mvFeature = mv;
 
   xr.baseExperience.onStateChangedObservable.add(s => {
     if (s === BABYLON.WebXRState.IN_XR) cam.position = startPos.clone();
   });
 
-  // 手腕操作面板（贴在左手柄上）
-  let panelText = null;
-  function updatePanel(){
-    if (panelText) panelText.text =
-      "速度 " + baseSpeed.toFixed(2) + "  高度 " + cam.position.y.toFixed(1) + "m\n" +
-      "移动:左摇杆  转向:右摇杆\n上升/下降:A/B  加减速:Y/X\n冲刺:右扳机  回中心:左Grip\n长按右手B 2秒 退出VR";
-  }
-
   // 绑定手柄按键
   xr.input.onControllerAddedObservable.add(c => {
     c.onMotionControllerInitObservable.add(mc => {
       if (mc.handedness === 'left') {
-        // 手腕面板
+        // 手腕面板（贴在左手柄上）
         if (c.grip) {
           const plane = BABYLON.MeshBuilder.CreatePlane('panel', { width:0.16, height:0.09 }, scene);
           plane.parent = c.grip;
           plane.position = new BABYLON.Vector3(0, 0.04, 0.05);
           plane.rotation = new BABYLON.Vector3(Math.PI/3, 0, 0);
+          plane.alwaysSelectAsActiveMesh = true;
           const adt = BABYLON.GUI.AdvancedDynamicTexture.CreateForMesh(plane, 512, 288);
           const tb = new BABYLON.GUI.TextBlock();
-          tb.color = 'white'; tb.fontSize = 34; tb.textWrapping = true;
+          tb.color = 'white'; tb.fontSize = 30; tb.textWrapping = true;
           adt.addControl(tb); panelText = tb; updatePanel();
+          refreeze();  // 面板是冻结后新加的网格，重新冻结一次让它进渲染列表
         }
         const x = mc.getComponent('x-button');
         const y = mc.getComponent('y-button');
         const g = mc.getComponent('xr-standard-squeeze');
+        const lt = mc.getComponent('xr-standard-trigger');
         x && x.onButtonStateChangedObservable.add(() => { if (x.pressed){ baseSpeed = Math.max(0.02, baseSpeed - 0.02); mv.movementSpeed = baseSpeed; updatePanel(); msg.textContent = controlsText(); }});
         y && y.onButtonStateChangedObservable.add(() => { if (y.pressed){ baseSpeed = Math.min(0.40, baseSpeed + 0.02); mv.movementSpeed = baseSpeed; updatePanel(); msg.textContent = controlsText(); }});
         g && g.onButtonStateChangedObservable.add(() => { if (g.pressed){ cam.position = startPos.clone(); updatePanel(); }});
+        // 左扳机：循环切换场景
+        lt && lt.onButtonStateChangedObservable.add(() => {
+          if (lt.pressed && !loading) {
+            modelIndex = (modelIndex + 1) % MODELS.length;
+            loadModel(modelIndex).catch(err => { msg.textContent = '模型加载失败：' + (err.message || err); loading = false; });
+          }
+        });
+      }
+      if (mc.handedness === 'right') {
+        // 按下右摇杆：切换 平滑转向 ↔ 45°瞬转
+        const ts = mc.getComponent('xr-standard-thumbstick');
+        ts && ts.onButtonStateChangedObservable.add(() => {
+          if (ts.pressed) { snapTurn = !snapTurn; mv.rotationEnabled = !snapTurn; updatePanel(); }
+        });
       }
     });
   });
 
-  // 每帧：右手 A/B 升降 + 右扳机冲刺 + 右手B长按2秒退出VR
-  let bHoldStart = 0;
+  // 每帧：右手 A/B 升降 + 右扳机冲刺 + 瞬转 + 右手B长按2秒退出VR
+  let bHoldStart = 0, snapReady = true;
   scene.onBeforeRenderObservable.add(() => {
     if (!xr.baseExperience || xr.baseExperience.state !== BABYLON.WebXRState.IN_XR) return;
     const dt = engine.getDeltaTime() / 1000;
@@ -142,6 +222,16 @@ BABYLON.SceneLoader.ImportMeshAsync("", ROOT, FILE, scene, (e) => {
         if (a && a.pressed) up += 1;
         if (b && b.pressed) { up -= 1; bHeld = true; }
         if (tr && tr.value > 0.5) sprint = true;
+        // 瞬转：右摇杆左右拨一下转 45°，回中后才能再转
+        if (snapTurn) {
+          const ts = mc.getComponent('xr-standard-thumbstick');
+          const ax = ts && ts.axes ? ts.axes.x : 0;
+          if (Math.abs(ax) < 0.4) snapReady = true;
+          else if (snapReady && Math.abs(ax) > 0.6) {
+            cam.cameraRotation.y += (ax > 0 ? 1 : -1) * SNAP_ANGLE;
+            snapReady = false;
+          }
+        }
       }
     });
     // 右手 B 键长按 2 秒退出 VR
